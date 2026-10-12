@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Energy Demand Forecaster — Holt-Winters on the US grid</title>
+<style>
+  :root {
+    --ink: #0d1b2a; --ink-2: #34465a; --muted: #6b7c8f; --faint: #9aa8b6;
+    --line: #e6e9ef; --line-strong: #d5dbe3; --paper: #ffffff; --page: #f4f6f9;
+    --brand: #0e8f6e; --pos: #1a936f; --neg: #d1495b; --accent2: #2f6f9f; --warn: #d98c33;
+    --shadow: 0 1px 2px rgba(13,27,42,.04), 0 8px 24px rgba(13,27,42,.06);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: var(--sans); color: var(--ink); background: var(--page); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .app { display: grid; grid-template-columns: 320px 1fr; min-height: 100vh; }
+  @media (max-width: 900px) { .app { grid-template-columns: 1fr; } }
+
+  .controls { background: var(--paper); border-right: 1px solid var(--line); padding: 26px 22px; position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; }
+  @media (max-width: 900px) { .controls { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); } }
+  .brandmark { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+  .brandmark .dot { width: 12px; height: 12px; border-radius: 3px; background: var(--brand); box-shadow: 0 0 0 4px rgba(14,143,110,.14); }
+  .brandmark b { font-size: .95rem; } .brandmark span { color: var(--faint); font-size: .78rem; }
+  .ctl { margin-bottom: 18px; }
+  .ctl label { display: block; font-size: .74rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 7px; }
+  .ctl label .val { float: right; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+  select, input[type=range] { width: 100%; }
+  select { font-family: var(--sans); font-size: .9rem; color: var(--ink); background: #fbfcfd; border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 11px; outline: none; }
+  select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(14,143,110,.12); }
+  input[type=range] { accent-color: var(--brand); }
+  .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 9px; overflow: hidden; }
+  .seg button { flex: 1; border: none; background: #fbfcfd; padding: 8px 6px; font-size: .82rem; color: var(--muted); cursor: pointer; font-family: var(--sans); }
+  .seg button.active { background: var(--brand); color: #fff; font-weight: 600; }
+  .btn { width: 100%; border: 1px solid var(--brand); background: var(--brand); color: #fff; border-radius: 9px; padding: 10px; font-size: .85rem; cursor: pointer; font-family: var(--sans); font-weight: 600; margin-top: 4px; }
+  .btn:hover { filter: brightness(1.05); }
+  .hint { font-size: .74rem; color: var(--faint); margin-top: 14px; line-height: 1.45; }
+
+  .stage { padding: 34px; overflow-x: hidden; }
+  @media (max-width: 900px) { .stage { padding: 20px; } }
+  .sheet { max-width: 980px; margin: 0 auto; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 40px 44px 34px; }
+  @media (max-width: 640px) { .sheet { padding: 26px 20px; } }
+  .sheet-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; border-bottom: 2px solid var(--ink); padding-bottom: 16px; margin-bottom: 24px; }
+  .sheet-head .title { font-family: var(--serif); font-size: 1.9rem; line-height: 1.12; letter-spacing: -.01em; margin: 0; }
+  .sheet-head .period { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .sheet-head .tag { text-align: right; color: var(--faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+  .sheet-head .tag b { display: block; color: var(--brand); font-size: .8rem; letter-spacing: .05em; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 26px; }
+  @media (max-width: 780px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { padding: 15px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .kpi:nth-child(4n) { border-right: none; }
+  @media (max-width: 780px) { .kpi:nth-child(2n) { border-right: none; } }
+  .kpi .k { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .kpi .v { font-size: 1.4rem; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .kpi .v.pos { color: var(--pos); } .kpi .v small { font-size: .7rem; color: var(--faint); font-weight: 600; }
+
+  .block { margin-bottom: 26px; }
+  .block h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 0 0 12px; font-weight: 700; }
+  .chart-wrap { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px 8px; background: linear-gradient(180deg,#fff,#fcfdfe); }
+  svg { display: block; width: 100%; height: auto; }
+  .axis { fill: var(--faint); font-size: 11px; font-family: var(--sans); }
+  .gridline { stroke: var(--line); stroke-width: 1; }
+  .legend { display: flex; gap: 18px; margin: 12px 4px 2px; font-size: .82rem; color: var(--muted); flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  @media (max-width: 780px) { .two-col { grid-template-columns: 1fr; } }
+  .interp { font-size: .92rem; color: var(--ink-2); } .interp b { color: var(--ink); }
+  .sheet-foot { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--faint); font-size: .74rem; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+  @media print {
+    .controls { display: none; } .app { display: block; } body { background: #fff; }
+    .stage { padding: 0; } .sheet { border: none; box-shadow: none; max-width: none; border-radius: 0; padding: 0; }
+    .chart-wrap { background: #fff; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="controls">
+    <div class="brandmark"><span class="dot"></span><b>Grid Demand</b><span>· forecaster</span></div>
+
+    <div class="ctl">
+      <label for="region">Grid region</label>
+      <select id="region"></select>
+    </div>
+    <div class="ctl">
+      <label for="horizon">Forecast horizon <span class="val" id="hval">168 h</span></label>
+      <input type="range" id="horizon" min="24" max="336" step="12" value="168" />
+    </div>
+    <div class="ctl">
+      <label>Seasonality</label>
+      <div class="seg" id="season">
+        <button data-v="mult" class="active">Multiplicative</button>
+        <button data-v="add">Additive</button>
+      </div>
+    </div>
+
+    <button class="btn" id="print">Print / PDF</button>
+    <div class="hint">Holt-Winters triple exponential smoothing with weekly-hourly seasonality (period 168), auto-fit by grid search and backtested against a seasonal-naive baseline. Data: EIA Hourly Grid Monitor (EIA-930), bundled — no key, no network calls. The same time-series machinery as the quant tools, applied to electricity demand.</div>
+  </aside>
+
+  <main class="stage"><div class="sheet" id="sheet"></div></main>
+</div>
+
+<script>
+var BUNDLE = /*__DATA__*/;
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var REGIONS = BUNDLE.regions, SERIES = BUNDLE.series;
+  var M = 168;                    // weekly-hourly season
+  var PHI = 0.98;                 // trend damping
+  var state = { region: REGIONS[0].id, horizon: 168, season: "mult" };
+
+  // ---- time helpers ----
+  function startDate(id) { var s = SERIES[id].start; return new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13)); }
+  function fmtDay(d) { return (d.getMonth() + 1) + "/" + d.getDate(); }
+  function fmtDayHour(d) { var h = d.getHours(); return (d.getMonth() + 1) + "/" + d.getDate() + " " + (h < 10 ? "0" + h : h) + "h"; }
+
+  // ---- gap-fill a raw series (few nulls) ----
+  function filled(id) {
+    var v = SERIES[id].values.slice();
+    for (var i = 0; i < v.length; i++) {
+      if (v[i] == null) {
+        if (i >= M && v[i - M] != null) v[i] = v[i - M];
+        else if (i > 0) v[i] = v[i - 1];
+        else { var j = i; while (j < v.length && v[j] == null) j++; v[i] = v[j] || 0; }
+      }
+    }
+    return v;
+  }
+
+  // ---- Holt-Winters (multiplicative or additive), damped trend ----
+  function hw(y, a, b, g, mult) {
+    var n = y.length;
+    var mean = function (arr, lo, hi) { var s = 0; for (var i = lo; i < hi; i++) s += arr[i]; return s / (hi - lo); };
+    var s1 = mean(y, 0, M), s2 = mean(y, M, 2 * M);
+    var level = s1, trend = (s2 - s1) / M;
+    var K = Math.min(Math.floor(n / M), 6);
+    var seas = new Array(M);
+    for (var i = 0; i < M; i++) {
+      var acc = 0, cnt = 0;
+      for (var k = 0; k < K; k++) {
+        var savg = mean(y, k * M, k * M + M);
+        acc += mult ? y[k * M + i] / savg : y[k * M + i] - savg;
+        cnt++;
+      }
+      seas[i] = acc / cnt;
+    }
+    // normalise
+    var sm = 0; for (i = 0; i < M; i++) sm += seas[i];
+    if (mult) { var f = M / sm; for (i = 0; i < M; i++) seas[i] *= f; }
+    else { var mn = sm / M; for (i = 0; i < M; i++) seas[i] -= mn; }
+
+    var sse = 0, cntf = 0, resid = [];
+    for (var t = M; t < n; t++) {
+      var si = t % M, so = seas[si];
+      var fit = mult ? (level + trend) * so : (level + trend) + so;
+      if (t >= 2 * M) { var e = y[t] - fit; sse += e * e; cntf++; resid.push(e); }
+      var lvlNew = mult ? a * (y[t] / so) + (1 - a) * (level + trend)
+                        : a * (y[t] - so) + (1 - a) * (level + trend);
+      var trNew = b * (lvlNew - level) + (1 - b) * PHI * trend;
+      var sNew = mult ? g * (y[t] / lvlNew) + (1 - g) * so
+                      : g * (y[t] - lvlNew) + (1 - g) * so;
+      level = lvlNew; trend = trNew; seas[si] = sNew;
+    }
+    var sigma = 0; for (i = 0; i < resid.length; i++) sigma += resid[i] * resid[i];
+    sigma = resid.length ? Math.sqrt(sigma / resid.length) : 0;
+    return { level: level, trend: trend, seas: seas, mse: cntf ? sse / cntf : Infinity, sigma: sigma, nEnd: n };
+  }
+
+  function forecast(model, H, mult) {
+    var out = [], level = model.level, trend = model.trend, seas = model.seas, n = model.nEnd;
+    for (var h = 1; h <= H; h++) {
+      var Th = trend * (PHI * (1 - Math.pow(PHI, h)) / (1 - PHI));
+      var si = (n - 1 + h) % M, s = seas[si];
+      out.push(mult ? (level + Th) * s : (level + Th) + s);
+    }
+    return out;
+  }
+
+  // grid-search alpha,beta,gamma minimising one-step MSE
+  function fit(y, mult) {
+    var A = [0.05, 0.15, 0.3, 0.5], B = [0.0, 0.05, 0.15], G = [0.05, 0.15, 0.3];
+    var best = null;
+    for (var ai = 0; ai < A.length; ai++) for (var bi = 0; bi < B.length; bi++) for (var gi = 0; gi < G.length; gi++) {
+      var m = hw(y, A[ai], B[bi], G[gi], mult);
+      if (!best || m.mse < best.mse) { best = m; best.params = [A[ai], B[bi], G[gi]]; }
+    }
+    return best;
+  }
+
+  function mape(actual, pred) { var s = 0, c = 0; for (var i = 0; i < actual.length; i++) { if (actual[i]) { s += Math.abs(actual[i] - pred[i]) / Math.abs(actual[i]); c++; } } return c ? s / c * 100 : NaN; }
+
+  // ---- analysis for current state ----
+  function analyze() {
+    var mult = state.season === "mult";
+    var y = filled(state.region);
+    var n = y.length;
+    // backtest: hold out last week
+    var trainEnd = n - M;
+    var train = y.slice(0, trainEnd);
+    var mTrain = fit(train, mult);
+    var fcBack = forecast(mTrain, M, mult);
+    var actualBack = y.slice(trainEnd);
+    var snaive = []; for (var i = 0; i < M; i++) snaive.push(y[trainEnd - M + i]);
+    var mapeHW = mape(actualBack, fcBack), mapeSN = mape(actualBack, snaive);
+    // full fit + forecast
+    var mFull = fit(y, mult);
+    var fc = forecast(mFull, state.horizon, mult);
+    var sigma = mFull.sigma;
+    // weekly profile (avg by hour-of-week, local)
+    var d0 = startDate(state.region);
+    var startHoW = (((d0.getDay() + 6) % 7) * 24 + d0.getHours());
+    var prof = new Array(M).fill(0), cnt = new Array(M).fill(0);
+    for (i = 0; i < n; i++) { var p = (startHoW + i) % M; prof[p] += y[i]; cnt[p]++; }
+    for (i = 0; i < M; i++) prof[i] = cnt[i] ? prof[i] / cnt[i] : null;
+    return { mult: mult, y: y, n: n, fc: fc, sigma: sigma, fcBack: fcBack, actualBack: actualBack,
+             snaive: snaive, mapeHW: mapeHW, mapeSN: mapeSN, prof: prof, startHoW: startHoW,
+             params: mFull.params, d0: d0 };
+  }
+
+  // ---- charts ----
+  var W = 900;
+  function gw(v) { return (v / 1000); }
+  function fmtGW(v) { return gw(v).toFixed(1); }
+
+  function forecastChart(A) {
+    var showHist = 14 * 24;
+    var n = A.n, H = state.horizon;
+    var h0 = Math.max(0, n - showHist);
+    var hist = [];
+    for (var i = h0; i < n; i++) hist.push(A.y[i]);
+    var H2 = 300, padL = 50, padR = 14, padT = 12, padB = 26;
+    var total = hist.length + H;
+    var iw = W - padL - padR, ih = H2 - padT - padB;
+    // y-range
+    var vals = hist.concat(A.fc);
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    for (var k = 0; k < H; k++) { hi = Math.max(hi, A.fc[k] + 1.96 * A.sigma * Math.sqrt(1 + k / M)); lo = Math.min(lo, A.fc[k] - 1.96 * A.sigma * Math.sqrt(1 + k / M)); }
+    var pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    var x = function (i) { return padL + iw * i / (total - 1); };
+    var yy = function (v) { return padT + ih - ih * (v - lo) / (hi - lo); };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H2 + '" style="height:' + H2 + 'px">';
+    for (var g = 0; g <= 4; g++) { var gv = lo + (hi - lo) * g / 4, gy = yy(gv); svg += '<line class="gridline" x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '"/><text class="axis" x="' + (padL - 6) + '" y="' + (gy + 3) + '" text-anchor="end">' + fmtGW(gv) + '</text>'; }
+    // x day labels
+    var d0 = startDate(state.region);
+    for (var tI = 0; tI < total; tI += 48) { var dt = new Date(d0.getTime() + (h0 + tI) * 3600000); svg += '<text class="axis" x="' + x(tI) + '" y="' + (H2 - 8) + '" text-anchor="middle">' + fmtDay(dt) + '</text>'; }
+    // prediction band
+    var band = "";
+    for (k = 0; k < H; k++) { var xi = x(hist.length + k), up = A.fc[k] + 1.96 * A.sigma * Math.sqrt(1 + k / M); band += (k ? "L" : "M") + xi.toFixed(1) + " " + yy(up).toFixed(1) + " "; }
+    for (k = H - 1; k >= 0; k--) { var lo2 = A.fc[k] - 1.96 * A.sigma * Math.sqrt(1 + k / M); band += "L" + x(hist.length + k).toFixed(1) + " " + yy(lo2).toFixed(1) + " "; }
+    band += "Z"; svg += '<path d="' + band + '" fill="rgba(47,111,159,.13)"/>';
+    // now divider
+    svg += '<line x1="' + x(hist.length - 1) + '" y1="' + padT + '" x2="' + x(hist.length - 1) + '" y2="' + (padT + ih) + '" stroke="var(--line-strong)" stroke-dasharray="3 3"/>';
+    svg += '<text class="axis" x="' + x(hist.length - 1) + '" y="' + (padT + 8) + '" text-anchor="middle" style="fill:var(--muted)">now</text>';
+    function line(arr, off, color, w) { var d = ""; for (var i = 0; i < arr.length; i++) d += (i ? "L" : "M") + x(off + i).toFixed(1) + " " + yy(arr[i]).toFixed(1) + " "; return '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="' + w + '" vector-effect="non-scaling-stroke"/>'; }
+    svg += line(hist, 0, "var(--brand)", 1.8);
+    svg += line([hist[hist.length - 1]].concat(A.fc), hist.length - 1, "var(--accent2)", 2);
+    svg += '</svg>';
+    return svg;
+  }
+
+  var DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  function profileChart(prof) {
+    var H2 = 220, padL = 50, padR = 14, padT = 12, padB = 24, iw = W - padL - padR, ih = H2 - padT - padB;
+    var lo = Math.min.apply(null, prof), hi = Math.max.apply(null, prof); var pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    var x = function (i) { return padL + iw * i / (M - 1); };
+    var yy = function (v) { return padT + ih - ih * (v - lo) / (hi - lo); };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H2 + '" style="height:' + H2 + 'px">';
+    for (var g = 0; g <= 3; g++) { var gv = lo + (hi - lo) * g / 3, gy = yy(gv); svg += '<line class="gridline" x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '"/><text class="axis" x="' + (padL - 6) + '" y="' + (gy + 3) + '" text-anchor="end">' + fmtGW(gv) + '</text>'; }
+    for (var d = 0; d < 7; d++) { var xs = x(d * 24); if (d) svg += '<line x1="' + xs + '" y1="' + padT + '" x2="' + xs + '" y2="' + (padT + ih) + '" stroke="var(--line)"/>'; svg += '<text class="axis" x="' + x(d * 24 + 12) + '" y="' + (H2 - 7) + '" text-anchor="middle">' + DAYS[d] + '</text>'; }
+    var dd = ""; for (var i = 0; i < M; i++) dd += (i ? "L" : "M") + x(i).toFixed(1) + " " + yy(prof[i]).toFixed(1) + " ";
+    svg += '<path d="' + dd + '" fill="none" stroke="var(--brand)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>';
+    return svg;
+  }
+
+  function backtestChart(A) {
+    var H2 = 220, padL = 50, padR = 14, padT = 12, padB = 24, iw = W - padL - padR, ih = H2 - padT - padB;
+    var a = A.actualBack, f = A.fcBack, s = A.snaive;
+    var all = a.concat(f, s); var lo = Math.min.apply(null, all), hi = Math.max.apply(null, all); var pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    var x = function (i) { return padL + iw * i / (M - 1); };
+    var yy = function (v) { return padT + ih - ih * (v - lo) / (hi - lo); };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H2 + '" style="height:' + H2 + 'px">';
+    for (var g = 0; g <= 3; g++) { var gv = lo + (hi - lo) * g / 3, gy = yy(gv); svg += '<line class="gridline" x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '"/><text class="axis" x="' + (padL - 6) + '" y="' + (gy + 3) + '" text-anchor="end">' + fmtGW(gv) + '</text>'; }
+    for (var d = 0; d <= 7; d++) svg += '<text class="axis" x="' + x(d * 24) + '" y="' + (H2 - 7) + '" text-anchor="middle">d' + d + '</text>';
+    function line(arr, color, w, dash) { var dd = ""; for (var i = 0; i < arr.length; i++) dd += (i ? "L" : "M") + x(i).toFixed(1) + " " + yy(arr[i]).toFixed(1) + " "; return '<path d="' + dd + '" fill="none" stroke="' + color + '" stroke-width="' + w + '" vector-effect="non-scaling-stroke"' + (dash ? ' stroke-dasharray="4 3"' : '') + '/>'; }
+    svg += line(s, "#8595a6", 1.4, true);
+    svg += line(f, "var(--accent2)", 2);
+    svg += line(a, "var(--brand)", 2);
+    svg += '</svg>';
+    return svg;
+  }
+
+  function render() {
+    $("hval").textContent = state.horizon + " h";
+    var reg = REGIONS.filter(function (r) { return r.id === state.region; })[0];
+    var A = analyze();
+    var latest = A.y[A.n - 1], peak = Math.max.apply(null, A.y);
+    var peakIdx = A.y.indexOf(peak), peakDate = new Date(A.d0.getTime() + peakIdx * 3600000);
+    var skill = A.mapeSN - A.mapeHW;
+
+    var html = "";
+    html += '<div class="sheet-head"><div>';
+    html += '<h1 class="title">' + reg.name + '</h1>';
+    html += '<div class="period">Hourly demand · ' + SERIES[state.region].start.slice(0, 10) + ' → ' + fmtDay(new Date(A.d0.getTime() + (A.n - 1) * 3600000)) + '/' + new Date(A.d0.getTime() + (A.n - 1) * 3600000).getFullYear() + ' · ' + (A.mult ? "multiplicative" : "additive") + ' Holt-Winters</div>';
+    html += '</div><div class="tag">Holt-Winters<b>Demand Forecast</b></div></div>';
+
+    html += '<div class="kpis">'
+      + '<div class="kpi"><div class="k">Latest demand</div><div class="v">' + fmtGW(latest) + ' <small>GW</small></div></div>'
+      + '<div class="kpi"><div class="k">Period peak</div><div class="v">' + fmtGW(peak) + ' <small>GW · ' + fmtDay(peakDate) + '</small></div></div>'
+      + '<div class="kpi"><div class="k">Backtest MAPE</div><div class="v pos">' + A.mapeHW.toFixed(2) + '%</div></div>'
+      + '<div class="kpi"><div class="k">vs seasonal-naive</div><div class="v">' + A.mapeSN.toFixed(2) + '%</div></div>'
+      + '</div>';
+
+    html += '<div class="block"><h3>Demand &amp; ' + state.horizon + '-hour forecast</h3><div class="chart-wrap">' + forecastChart(A) + '</div>'
+      + '<div class="legend"><span><i class="swatch" style="background:var(--brand)"></i> Actual demand</span><span><i class="swatch" style="background:var(--accent2)"></i> Holt-Winters forecast</span><span style="color:var(--faint)">shaded = 95% interval</span></div></div>';
+
+    html += '<div class="two-col">';
+    html += '<div class="block"><h3>Average weekly load shape</h3><div class="chart-wrap">' + profileChart(A.prof) + '</div></div>';
+    html += '<div class="block"><h3>Backtest — held-out week</h3><div class="chart-wrap">' + backtestChart(A) + '</div>'
+      + '<div class="legend"><span><i class="swatch" style="background:var(--brand)"></i> Actual</span><span><i class="swatch" style="background:var(--accent2)"></i> Holt-Winters</span><span><i class="swatch" style="background:#8595a6"></i> Seasonal-naive</span></div></div>';
+    html += '</div>';
+
+    html += '<div class="block"><h3>Interpretation</h3><p class="interp">';
+    html += '<b>' + reg.name + '</b> peaks around <b>' + fmtGW(peak) + ' GW</b> and shows the classic daily load cycle with lighter weekend demand (see the weekly shape). ';
+    html += 'Backtesting one week out of sample, Holt-Winters lands at <b>' + A.mapeHW.toFixed(2) + '% MAPE</b> versus <b>' + A.mapeSN.toFixed(2) + '%</b> for a seasonal-naive "same hour last week" forecast — ';
+    html += (skill > 0 ? 'a <b>' + skill.toFixed(2) + ' pp</b> improvement, so the model is adding skill beyond simple seasonality.' : 'roughly on par here, a reminder that seasonal-naive is a strong baseline for electricity load.');
+    html += ' Fitted smoothing parameters: α=' + A.params[0] + ', β=' + A.params[1] + ', γ=' + A.params[2] + '.';
+    html += '</p></div>';
+
+    html += '<div class="sheet-foot"><span>Data: EIA Hourly Grid Monitor (EIA-930) · bundled ' + BUNDLE.built + '</span><span>Educational — same methods as the quant tools, different domain</span></div>';
+    $("sheet").innerHTML = html;
+  }
+
+  // ---- wire up ----
+  REGIONS.forEach(function (r) { var o = document.createElement("option"); o.value = r.id; o.textContent = r.name; $("region").appendChild(o); });
+  $("region").value = state.region;
+  var rt = null; function sched() { clearTimeout(rt); rt = setTimeout(render, 30); }
+  $("region").addEventListener("change", function () { state.region = this.value; render(); });
+  $("horizon").addEventListener("input", function () { state.horizon = +this.value; sched(); });
+  $("season").addEventListener("click", function (e) { if (e.target.tagName !== "BUTTON") return; state.season = e.target.getAttribute("data-v"); [].forEach.call(this.querySelectorAll("button"), function (b) { b.classList.toggle("active", b === e.target); }); render(); });
+  $("print").addEventListener("click", function () { window.print(); });
+
+  render();
+})();
+</script>
+</body>
+</html>
